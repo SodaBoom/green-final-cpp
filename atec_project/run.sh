@@ -1,3 +1,3 @@
 #!/bin/bash
 
-/home/admin/atec_project/green-final
+/home/admin/atec_project/green_final
