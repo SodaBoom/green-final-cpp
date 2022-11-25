@@ -23,29 +23,49 @@ void activate_flag() {
     system(("touch " + activate_flag_file_path).c_str());
 }
 
-void init_db() {
-    std::unique_ptr<sql::Connection> con(driver->connect(url, properties));
+unique_ptr<Connection> get_conn() {
+    unique_ptr<Connection> con(driver->connect(url, properties));
+    return con;
 }
 
-//void toCollectEnergyRepository_findById(int to_collect_energy_id){
-//    std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-//}
-//
-//void collect(char *user_id, int to_collect_energy_id){
-//    try {
-//        std::unique_ptr<sql::Statement> stmt(conn->createStatement());
-//        std::unique_ptr<sql::ResultSet> rs(stmt->executeQuery("SELECT 1, 'Hello world'"));
-//    }
-//    catch (sql::SQLSyntaxErrorException &e) {
-//        std::cerr << "[" << e.getSQLState() << "] " << e.what() << "(" << e.getErrorCode() << ")" << std::endl;
-//    }
-//    catch (std::regex_error &e) {
-//        std::cerr << "Regex exception:" << e.what() << std::endl;
-//    }
-//    catch (std::exception &e) {
-//        std::cerr << "Standard exception:" << e.what() << std::endl;
-//    }
-//}
+void init_db() {
+}
+
+void toCollectEnergy_findById(int id) {
+    unique_ptr<Connection> conn = get_conn();
+    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement("select * from to_collect_energy where id = ?"));
+    stmt->setInt(1, id);
+    ResultSet *rs = stmt->executeQuery();
+}
+
+void toCollectEnergy_update(int id, int toCollectEnergy) {
+    unique_ptr<Connection> conn = get_conn();
+    unique_ptr<sql::PreparedStatement> stmt(
+            conn->prepareStatement("update to_collect_energy set to_collect_energy = ? where id = ?"));
+    stmt->setInt(1, toCollectEnergy);
+    stmt->setInt(2, id);
+    stmt->executeUpdate();
+}
+
+void totalEnergy_findByUserId(const char *user_id) {
+    unique_ptr<Connection> conn = get_conn();
+    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement("select * from total_energy user_id = ?"));
+    stmt->setString(1, user_id);
+    ResultSet *rs = stmt->executeQuery();
+}
+
+void totalEnergy_update(const char *user_id, int totalEnergy) {
+    unique_ptr<Connection> conn = get_conn();
+    unique_ptr<sql::PreparedStatement> stmt(
+            conn->prepareStatement("update total_energy set total_energy = ? where user_id = ?"));
+    stmt->setInt(1, totalEnergy);
+    stmt->setString(2, user_id);
+    ResultSet *rs = stmt->executeQuery();
+}
+
+void collect(const char *user_id, int to_collect_energy_id) {
+
+}
 
 int main() {
     // 初始化db
@@ -54,9 +74,9 @@ int main() {
     Server svr;
     // POST /collect_energy/{userId}/{toCollectEnergyId}
     svr.Get(R"(/collect_energy/(\w+)/(\d+))", [](const Request &req, Response &res) {
-        auto userId = req.matches[1];
-        auto toCollectEnergyId = req.matches[2];
-//        collect(userId, toCollectEnergyId.first);
+        auto userId = req.matches[1].str().c_str();
+        auto toCollectEnergyId = atoi(req.matches[2].str().c_str());
+        collect(userId, toCollectEnergyId);
         res.set_content("true", "text/plain");
     });
     svr.listen("0.0.0.0", 8080);
