@@ -2,48 +2,63 @@
 #include <memory>
 #include <regex>
 #include <string>
-#include <sstream>
-#include <cmath>
+#include "inc/httplib.h"
 
 #include "mariadb/conncpp.hpp"
 
-int main(int argc, char** argv)
-{
-  // Instantiate Driver
-  sql::Driver* driver = sql::mariadb::get_driver_instance();
+using namespace std;
+using namespace httplib;
+using namespace sql;
 
-  // Configure Connection
-  sql::SQLString url("jdbc:mariadb://127.0.0.1/atec2022");
-  sql::Properties properties({ {"user", argc > 1 ? argv[1] : "root"}, {"password", argc > 2 ? argv[2] : "111111"} });
+// Instantiate Driver
+Driver *driver = sql::mariadb::get_driver_instance();
+// Configure Connection
+SQLString url("jdbc:mariadb://127.0.0.1/atec2022");
+Properties properties({{"user",     "root"},
+                       {"password", "111111"}});
 
-  std::cerr << "Connecting using url: " << url << "with user " << properties["user"] << " and " << properties["password"].length();
-  if (argc > 3) {
-    properties["localSocket"]= argv[3];
-    std::cerr << " via local socket " << argv[3] << std::endl;
-  }
-  else {
-    std::cerr << " via default tcp port" << std::endl;
-  }
+// 标记启动成功
+void activate_flag() {
+    string activate_flag_file_path = "/home/admin/workspace/job/output/user_activated";
+    system(("touch " + activate_flag_file_path).c_str());
+}
 
-  // Establish Connection
-  try {
+void init_db() {
     std::unique_ptr<sql::Connection> con(driver->connect(url, properties));
+}
 
-    std::unique_ptr<sql::Statement> stmt(con->createStatement());
-    std::unique_ptr<sql::ResultSet> rs(stmt->executeQuery("SELECT 1, 'Hello world'"));
-    if (rs->next()) {
-     std::cout << rs->getInt(1) << rs->getString(2) << std::endl;
-    }
-  }
-  catch (sql::SQLSyntaxErrorException & e) {
-    std::cerr << "[" << e.getSQLState() << "] " << e.what() << "("<< e.getErrorCode() << ")" << std::endl;
-  }
-  catch (std::regex_error& e) {
-    std::cerr << "Regex exception:" << e.what() << std::endl;
-  }
-  catch (std::exception& e) {
-    std::cerr << "Standard exception:" << e.what() << std::endl;
-  }
+//void toCollectEnergyRepository_findById(int to_collect_energy_id){
+//    std::unique_ptr<sql::Statement> stmt(conn->createStatement());
+//}
+//
+//void collect(char *user_id, int to_collect_energy_id){
+//    try {
+//        std::unique_ptr<sql::Statement> stmt(conn->createStatement());
+//        std::unique_ptr<sql::ResultSet> rs(stmt->executeQuery("SELECT 1, 'Hello world'"));
+//    }
+//    catch (sql::SQLSyntaxErrorException &e) {
+//        std::cerr << "[" << e.getSQLState() << "] " << e.what() << "(" << e.getErrorCode() << ")" << std::endl;
+//    }
+//    catch (std::regex_error &e) {
+//        std::cerr << "Regex exception:" << e.what() << std::endl;
+//    }
+//    catch (std::exception &e) {
+//        std::cerr << "Standard exception:" << e.what() << std::endl;
+//    }
+//}
 
-  return 0;
+int main() {
+    // 初始化db
+    init_db();
+    // 初始化server
+    Server svr;
+    // POST /collect_energy/{userId}/{toCollectEnergyId}
+    svr.Get(R"(/collect_energy/(\w+)/(\d+))", [](const Request &req, Response &res) {
+        auto userId = req.matches[1];
+        auto toCollectEnergyId = req.matches[2];
+//        collect(userId, toCollectEnergyId.first);
+        res.set_content("true", "text/plain");
+    });
+    svr.listen("0.0.0.0", 8080);
+    return 0;
 }
