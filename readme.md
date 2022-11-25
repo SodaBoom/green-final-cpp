@@ -1,11 +1,15 @@
-执行脚本编译mariadb-conn，注意，一定要是`source`，不能是`sh`
+# 1. 创建镜像
 ```sh
-$ source build.sh
+sh ppackage.sh
 ```
 
-之后继续编译该项目
+# 2. run镜像
 ```
-$ mkdir -p build && cd build
-$ cmake ..
-$ make -j4
+sudo docker run -dit green-final /bin/bash
+
+```
+
+# 3. 进入镜像
+```
+sudo docker exec -it 容器id bash
 ```
