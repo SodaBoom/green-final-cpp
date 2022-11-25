@@ -25,3 +25,4 @@ RUN install lib/mariadb/libmariadbcpp.so /usr/lib
 RUN install lib/mariadb/plugin/* /usr/lib/mariadb/plugin
 
 WORKDIR /root/source/green
+RUN rm -rf build && mkdir -p build && cd build && cmake .. && make -j4
