@@ -1,0 +1,5 @@
+*.DS_DStore
+
+cmake-build-debug
+build*
+.idea
