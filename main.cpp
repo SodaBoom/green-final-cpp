@@ -2,6 +2,7 @@
 #include <memory>
 #include <regex>
 #include <string>
+#include <cmath>
 #include "inc/httplib.h"
 
 #include "mariadb/conncpp.hpp"
@@ -38,41 +39,61 @@ void init_db() {
     conn_list.reserve(100);
 }
 
-void toCollectEnergy_findById(int id) {
-    shared_ptr<Connection> conn = get_conn();
-    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement("select * from to_collect_energy where id = ?"));
-    stmt->setInt(1, id);
-    ResultSet *rs = stmt->executeQuery();
-}
-
-void toCollectEnergy_update(int id, int toCollectEnergy) {
-    shared_ptr<Connection> conn = get_conn();
-    unique_ptr<sql::PreparedStatement> stmt(
-            conn->prepareStatement("update to_collect_energy set to_collect_energy = ? where id = ?"));
+void toCollectEnergy_update(const shared_ptr<Connection> &conn, int id, int toCollectEnergy) {
+    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(
+            "update to_collect_energy set to_collect_energy = ?, gmt_modified = current_timestamp() where id = ?"
+    ));
     stmt->setInt(1, toCollectEnergy);
     stmt->setInt(2, id);
     stmt->executeUpdate();
 }
 
-void totalEnergy_findByUserId(const char *user_id) {
-    shared_ptr<Connection> conn = get_conn();
-    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement("select * from total_energy user_id = ?"));
-    stmt->setString(1, user_id);
-    ResultSet *rs = stmt->executeQuery();
-}
-
-void totalEnergy_update(const char *user_id, int totalEnergy) {
-    shared_ptr<Connection> conn = get_conn();
-    unique_ptr<sql::PreparedStatement> stmt(
-            conn->prepareStatement("update total_energy set total_energy = ? where user_id = ?"));
+void totalEnergy_update(const shared_ptr<Connection> &conn, const char *user_id, int totalEnergy) {
+    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(
+            "update total_energy set total_energy = ?, gmt_modified = current_timestamp() where user_id = ?"
+    ));
     stmt->setInt(1, totalEnergy);
     stmt->setString(2, user_id);
-    ResultSet *rs = stmt->executeQuery();
+    stmt->executeUpdate();
 }
 
 void collect(const char *user_id, int to_collect_energy_id) {
     uint64_t request_idx = request_count.fetch_add(1);
     cout << request_idx << endl;
+
+    shared_ptr<Connection> conn = get_conn();
+    conn->setAutoCommit(false);
+    // get to_collect_energy
+    unique_ptr<sql::PreparedStatement> stmt1(conn->prepareStatement(
+            "select * from to_collect_energy where id = ? and status != 'all_collected'"
+    ));
+    stmt1->setInt(1, to_collect_energy_id);
+    ResultSet *rs1 = stmt1->executeQuery();
+    rs1->next();
+    auto tce_user_id = rs1->getString("user_id");
+    auto tce_to_collect_energy = rs1->getInt("to_collect_energy");
+
+    // get total_energy
+    unique_ptr<sql::PreparedStatement> stmt2(conn->prepareStatement(
+            "select * from total_energy user_id = ?"
+    ));
+    stmt2->setString(1, user_id);
+    ResultSet *rs2 = stmt2->executeQuery();
+    rs2->next();
+    auto te_total_energy = rs1->getInt("user_id");
+
+    int can_collect_energy; // 可以取多少
+    if (std::strcmp(tce_user_id.c_str(), user_id) == 0) {
+        can_collect_energy = tce_to_collect_energy; // 自己取全部
+    } else {
+        can_collect_energy = (int) (floor((double) tce_to_collect_energy * 0.3));
+    }
+    te_total_energy += can_collect_energy;
+    tce_to_collect_energy -= can_collect_energy;
+    totalEnergy_update(conn, user_id, te_total_energy);
+    toCollectEnergy_update(conn, to_collect_energy_id, tce_to_collect_energy);
+
+    conn->commit();
 }
 
 int main() {
