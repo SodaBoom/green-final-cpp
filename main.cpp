@@ -119,6 +119,13 @@ int main() {
         collect(userId, toCollectEnergyId);
         res.set_content("true", "text/plain");
     });
-    svr.listen("0.0.0.0", 8080);
+
+    if (!svr.bind_to_port("0.0.0.0", 8080)) {
+        std::cerr << "bind port fail" << std::endl;
+    }
+    activate_flag();
+    if (!svr.listen_after_bind()) {
+        std::cerr << "listen fail" << std::endl;
+    }
     return 0;
 }
