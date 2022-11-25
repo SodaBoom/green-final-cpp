@@ -1,3 +1,0 @@
-LIBRARY mariadbcpp.dll
-EXPORTS
-DllMain

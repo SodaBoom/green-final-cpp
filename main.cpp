@@ -5,7 +5,7 @@
 #include <sstream>
 #include <cmath>
 
-#include "conncpp.hpp"
+#include "mariadb/conncpp.hpp"
 
 int main(int argc, char** argv)
 {
