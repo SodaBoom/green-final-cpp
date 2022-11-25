@@ -69,10 +69,13 @@ void collect(const char *user_id, int to_collect_energy_id) {
     shared_ptr<Connection> conn = get_conn();
     conn->setAutoCommit(false);
     // get to_collect_energy
+    // 自己来采集 或者 别人来采集但必须是未采集状态
     unique_ptr<PreparedStatement> stmt1(conn->prepareStatement(
-            "select * from to_collect_energy where id = ? and (status is null or status = 'collected_by_other')"
+            "select user_id, to_collect_energy from to_collect_energy"
+            " where id = ? and (user_id = ? or status is null)"
     ));
     stmt1->setInt(1, to_collect_energy_id);
+    stmt1->setString(2, user_id);
     ResultSet *rs1 = stmt1->executeQuery();
     if (!rs1->next()) return;
     auto tce_user_id = rs1->getString("user_id");
@@ -80,7 +83,7 @@ void collect(const char *user_id, int to_collect_energy_id) {
 
     // get total_energy
     unique_ptr<PreparedStatement> stmt2(conn->prepareStatement(
-            "select * from total_energy where user_id = ?"
+            "select total_energy from total_energy where user_id = ?"
     ));
     stmt2->setString(1, user_id);
     ResultSet *rs2 = stmt2->executeQuery();
