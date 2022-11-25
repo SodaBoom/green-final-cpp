@@ -22,8 +22,12 @@ vector<shared_ptr<Connection>> conn_list;
 
 // 标记启动成功
 void activate_flag() {
-    string activate_flag_file_path = "/home/admin/workspace/job/output/user_activated";
-    system(("touch " + activate_flag_file_path).c_str());
+    string activate_flag_file_path = "/home/admin/workspace/job/output/";
+    struct stat info = {};
+    if (stat(activate_flag_file_path.c_str(), &info) != 0) {  // does not exist
+        system(("mkdir -p " + activate_flag_file_path).c_str());
+    }
+    system(("touch " + activate_flag_file_path + "user_activated").c_str());
 }
 
 shared_ptr<Connection> get_conn() {
@@ -61,7 +65,7 @@ void totalEnergy_update(const shared_ptr<Connection> &conn, const char *user_id,
 
 void collect(const char *user_id, int to_collect_energy_id) {
     uint64_t request_idx = request_count.fetch_add(1);
-    cout << request_idx << endl;
+//    cout << request_idx << endl;
 
     shared_ptr<Connection> conn = get_conn();
     conn->setAutoCommit(false);
