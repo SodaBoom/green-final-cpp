@@ -39,12 +39,14 @@ void init_db() {
     conn_list.reserve(100);
 }
 
-void toCollectEnergy_update(const shared_ptr<Connection> &conn, int id, int toCollectEnergy) {
+void
+toCollectEnergy_update(const shared_ptr<Connection> &conn, int id, int toCollectEnergy, bool is_collected_by_other) {
     unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(
-            "update to_collect_energy set to_collect_energy = ?, gmt_modified = current_timestamp() where id = ?"
+            "update to_collect_energy set to_collect_energy = ?, status = ?, gmt_modified = current_timestamp() where id = ?"
     ));
     stmt->setInt(1, toCollectEnergy);
-    stmt->setInt(2, id);
+    stmt->setString(2, is_collected_by_other ? "collected_by_other" : "all_collected");
+    stmt->setInt(3, id);
     stmt->executeUpdate();
 }
 
@@ -83,15 +85,18 @@ void collect(const char *user_id, int to_collect_energy_id) {
     auto te_total_energy = rs1->getInt("user_id");
 
     int can_collect_energy; // 可以取多少
+    bool is_collected_by_other; // 是别人取吗
     if (std::strcmp(tce_user_id.c_str(), user_id) == 0) {
         can_collect_energy = tce_to_collect_energy; // 自己取全部
+        is_collected_by_other = false;
     } else {
         can_collect_energy = (int) (floor((double) tce_to_collect_energy * 0.3));
+        is_collected_by_other = true;
     }
     te_total_energy += can_collect_energy;
     tce_to_collect_energy -= can_collect_energy;
     totalEnergy_update(conn, user_id, te_total_energy);
-    toCollectEnergy_update(conn, to_collect_energy_id, tce_to_collect_energy);
+    toCollectEnergy_update(conn, to_collect_energy_id, tce_to_collect_energy, is_collected_by_other);
 
     conn->commit();
 }
