@@ -13,7 +13,7 @@ using namespace sql;
 atomic_uint64_t thread_count = 0;
 atomic_uint64_t request_count = 0;
 // Instantiate Driver
-Driver *driver = sql::mariadb::get_driver_instance();
+Driver *driver = mariadb::get_driver_instance();
 // Configure Connection
 SQLString url("jdbc:mariadb://127.0.0.1/atec2022");
 Properties properties({{"user",     "root"},
@@ -45,7 +45,7 @@ void init_db() {
 
 void
 toCollectEnergy_update(const shared_ptr<Connection> &conn, int id, int toCollectEnergy, bool is_collected_by_other) {
-    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(
+    unique_ptr<PreparedStatement> stmt(conn->prepareStatement(
             "update to_collect_energy set to_collect_energy = ?, status = ?, gmt_modified = current_timestamp() where id = ?"
     ));
     stmt->setInt(1, toCollectEnergy);
@@ -55,7 +55,7 @@ toCollectEnergy_update(const shared_ptr<Connection> &conn, int id, int toCollect
 }
 
 void totalEnergy_update(const shared_ptr<Connection> &conn, const char *user_id, int totalEnergy) {
-    unique_ptr<sql::PreparedStatement> stmt(conn->prepareStatement(
+    unique_ptr<PreparedStatement> stmt(conn->prepareStatement(
             "update total_energy set total_energy = ?, gmt_modified = current_timestamp() where user_id = ?"
     ));
     stmt->setInt(1, totalEnergy);
@@ -64,29 +64,28 @@ void totalEnergy_update(const shared_ptr<Connection> &conn, const char *user_id,
 }
 
 void collect(const char *user_id, int to_collect_energy_id) {
-    uint64_t request_idx = request_count.fetch_add(1);
-//    cout << request_idx << endl;
+    request_count.fetch_add(1);
 
     shared_ptr<Connection> conn = get_conn();
     conn->setAutoCommit(false);
     // get to_collect_energy
-    unique_ptr<sql::PreparedStatement> stmt1(conn->prepareStatement(
-            "select * from to_collect_energy where id = ? and status != 'all_collected'"
+    unique_ptr<PreparedStatement> stmt1(conn->prepareStatement(
+            "select * from to_collect_energy where id = ? and (status is null or status = 'collected_by_other')"
     ));
     stmt1->setInt(1, to_collect_energy_id);
     ResultSet *rs1 = stmt1->executeQuery();
-    rs1->next();
+    if (!rs1->next()) return;
     auto tce_user_id = rs1->getString("user_id");
     auto tce_to_collect_energy = rs1->getInt("to_collect_energy");
 
     // get total_energy
-    unique_ptr<sql::PreparedStatement> stmt2(conn->prepareStatement(
-            "select * from total_energy user_id = ?"
+    unique_ptr<PreparedStatement> stmt2(conn->prepareStatement(
+            "select * from total_energy where user_id = ?"
     ));
     stmt2->setString(1, user_id);
     ResultSet *rs2 = stmt2->executeQuery();
-    rs2->next();
-    auto te_total_energy = rs1->getInt("user_id");
+    if (!rs2->next()) return;
+    auto te_total_energy = rs2->getInt("total_energy");
 
     int can_collect_energy; // 可以取多少
     bool is_collected_by_other; // 是别人取吗
@@ -111,17 +110,27 @@ int main() {
     // 初始化server
     Server svr;
     // POST /collect_energy/{userId}/{toCollectEnergyId}
-    svr.Get(R"(/collect_energy/(\w+)/(\d+))", [](const Request &req, Response &res) {
-        auto userId = req.matches[1].str().c_str();
+    svr.Get(R"(/collect_energy/(\w+)/(\d+))", [&](const Request &req, Response &res) {
+        thread_local char userId[4096];
+        memcpy(userId, req.matches[1].str().c_str(), req.matches[1].str().length());
         auto toCollectEnergyId = atoi(req.matches[2].str().c_str());
         collect(userId, toCollectEnergyId);
         res.set_content("true", "text/plain");
     });
-    svr.Post(R"(/collect_energy/(\w+)/(\d+))", [](const Request &req, Response &res) {
-        auto userId = req.matches[1].str().c_str();
+    svr.Post(R"(/collect_energy/(\w+)/(\d+))", [&](const Request &req, Response &res) {
+        thread_local char userId[4096];
+        memcpy(userId, req.matches[1].str().c_str(), req.matches[1].str().length());
         auto toCollectEnergyId = atoi(req.matches[2].str().c_str());
         collect(userId, toCollectEnergyId);
         res.set_content("true", "text/plain");
+    });
+    svr.set_exception_handler([](const auto &req, auto &res, const std::exception_ptr &ep) {
+        res.set_content("true", "text/html");
+        res.status = 200;
+    });
+    svr.set_error_handler([](const auto &req, auto &res) {
+        res.set_content("true", "text/html");
+        res.status = 200;
     });
 
     if (!svr.bind_to_port("0.0.0.0", 8080)) {
