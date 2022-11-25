@@ -2,3 +2,10 @@
 ```sh
 $ source build.sh
 ```
+
+之后继续编译该项目
+```
+$ mkdir -p build && cd build
+$ cmake ..
+$ make -j4
+```
