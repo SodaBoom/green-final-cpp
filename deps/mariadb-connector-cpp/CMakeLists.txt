@@ -513,14 +513,14 @@ ELSE()
           COMPONENT Documentation)
   ADD_SUBDIRECTORY(include)
 ENDIF()
-# Tests. Checking if we have them. May be not the case if we are building from source package
-IF(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt")
-  ADD_SUBDIRECTORY(test)
-  ADD_CUSTOM_COMMAND(TARGET ${LIBRARY_NAME} POST_BUILD
-	  COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:${LIBRARY_NAME}> test)
-  ADD_CUSTOM_COMMAND(TARGET ${LIBRARY_NAME} POST_BUILD
-	  COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:libmariadb> test)
-ENDIF()
+# # Tests. Checking if we have them. May be not the case if we are building from source package
+# IF(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/CMakeLists.txt")
+#   ADD_SUBDIRECTORY(test)
+#   ADD_CUSTOM_COMMAND(TARGET ${LIBRARY_NAME} POST_BUILD
+# 	  COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:${LIBRARY_NAME}> test)
+#   ADD_CUSTOM_COMMAND(TARGET ${LIBRARY_NAME} POST_BUILD
+# 	  COMMAND ${CMAKE_COMMAND} ARGS -E copy $<TARGET_FILE:libmariadb> test)
+# ENDIF()
 
 # Packaging
 INCLUDE(cmake/packaging.cmake)
