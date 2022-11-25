@@ -24,5 +24,10 @@ RUN install -d /usr/lib/mariadb/plugin
 RUN install lib/mariadb/libmariadbcpp.so /usr/lib
 RUN install lib/mariadb/plugin/* /usr/lib/mariadb/plugin
 
+# 2. 编译项目
 WORKDIR /root/source/green
 RUN rm -rf build && mkdir -p build && cd build && cmake .. && make -j4
+
+# 3. 产物复制到提交目录
+WORKDIR /root/source/green
+RUN cp build/green_final /home/admin/atec_project/green_final
