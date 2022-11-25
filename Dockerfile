@@ -2,6 +2,7 @@ FROM ubuntu:20.04
 
 # 赛题要求提交atec_project文件
 COPY atec_project /home/admin/atec_project
+RUN chmod +x /home/admin/atec_project/run.sh
 
 # 安装工具链
 RUN apt-get update -y
