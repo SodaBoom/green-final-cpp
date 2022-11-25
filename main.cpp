@@ -1,56 +1,49 @@
 #include <iostream>
-#include <mysql/mysql.h>
+#include <memory>
+#include <regex>
+#include <string>
+#include <sstream>
+#include <cmath>
 
-using namespace std;
+#include "conncpp.hpp"
 
-int main() {
-    std::cout << "Hello, World!" << std::endl;
-    MYSQL *conn;
-    if (!(conn = mysql_init(0))) {
-        fprintf(stderr, "unable to initialize connection struct\n");
-        exit(1);
+int main(int argc, char** argv)
+{
+  // Instantiate Driver
+  sql::Driver* driver = sql::mariadb::get_driver_instance();
+
+  // Configure Connection
+  sql::SQLString url("jdbc:mariadb://127.0.0.1/atec2022");
+  sql::Properties properties({ {"user", argc > 1 ? argv[1] : "root"}, {"password", argc > 2 ? argv[2] : "111111"} });
+
+  std::cerr << "Connecting using url: " << url << "with user " << properties["user"] << " and " << properties["password"].length();
+  if (argc > 3) {
+    properties["localSocket"]= argv[3];
+    std::cerr << " via local socket " << argv[3] << std::endl;
+  }
+  else {
+    std::cerr << " via default tcp port" << std::endl;
+  }
+
+  // Establish Connection
+  try {
+    std::unique_ptr<sql::Connection> con(driver->connect(url, properties));
+
+    std::unique_ptr<sql::Statement> stmt(con->createStatement());
+    std::unique_ptr<sql::ResultSet> rs(stmt->executeQuery("SELECT 1, 'Hello world'"));
+    if (rs->next()) {
+     std::cout << rs->getInt(1) << rs->getString(2) << std::endl;
     }
+  }
+  catch (sql::SQLSyntaxErrorException & e) {
+    std::cerr << "[" << e.getSQLState() << "] " << e.what() << "("<< e.getErrorCode() << ")" << std::endl;
+  }
+  catch (std::regex_error& e) {
+    std::cerr << "Regex exception:" << e.what() << std::endl;
+  }
+  catch (std::exception& e) {
+    std::cerr << "Standard exception:" << e.what() << std::endl;
+  }
 
-    // Connect to the database
-    if (!mysql_real_connect(
-            conn,                 // Connection
-            "127.0.0.1",// Host
-            "root",            // User account
-            "111111",   // User password
-            "atec2022",               // Default database
-            3306,                 // Port number
-            nullptr,                 // Path to socket file
-            0                     // Additional options
-    )) {
-        // Report the failed-connection error & close the handle
-        fprintf(stderr, "Error connecting to Server: %s\n", mysql_error(conn));
-        mysql_close(conn);
-        exit(1);
-    }
-
-    // Use the Connection
-    // ...
-    int res = mysql_query(conn, "select 1;");
-    if (res) {
-        printf("error\n");
-    } else {
-        printf("OK\n");
-        MYSQL_RES *result = mysql_store_result(conn);
-        //得到查询到的数据条数
-        int row_count = mysql_num_rows(result);
-        cout<<"all data number: "<< row_count << endl;
-        //得到字段的个数和字段的名字
-        int field_count = mysql_num_fields(result);
-        cout << "filed count: " <<field_count << endl;
-        //得到所有字段名
-        MYSQL_FIELD *field = nullptr;
-        for(int i=0;i<field_count;++i) {
-            field = mysql_fetch_field_direct(result, i);
-            cout << field->name << "\t";
-        }
-    }
-    // Close the Connection
-    mysql_close(conn);
-
-    return 0;
+  return 0;
 }
