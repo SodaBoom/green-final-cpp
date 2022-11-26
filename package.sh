@@ -1,4 +1,4 @@
-rm -rf green-final.tar
+# rm -rf green-final.tar
 docker build -t green-final .
 
-docker save green-final -o green-final.tar
+# docker save green-final -o green-final.tar
