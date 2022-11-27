@@ -11,6 +11,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <cmath>
+#include <chrono>
+
 #include "mem.hpp"
 #include "mariadb/conncpp.hpp"
 
@@ -29,6 +31,7 @@ auto stop = chrono::steady_clock::now();
 
 void handle_request(char *line, int len);
 
+atomic_uint32_t req_cnt = 0;
 // Instantiate Driver
 Driver *driver = mariadb::get_driver_instance();
 // Configure Connection
@@ -150,6 +153,8 @@ void send_response_head(int cfd) {
     send(cfd, buf, strlen(buf), 0);
 }
 
+std::thread executeUpdateToCollect_bg;
+std::thread executeUpdateTotal_bg;
 void func_http(int cfd) {
     thread_local uint64_t count = 0;
     while (done_count < 100 * 10000) {
@@ -158,8 +163,25 @@ void func_http(int cfd) {
         if (len <= 0) {
             break;
         }
-        send_response_head(cfd);//先返回响应,减少io开销
-        handle_request(line, (int) len);
+        uint32_t cnt = ++req_cnt;
+        if (cnt == 100 * 10000 - 1) {
+            handle_request(line, (int) len);
+            executeUpdateToCollect_bg = std::thread(executeUpdateToCollect);
+            executeUpdateToCollect_bg.detach();
+            using namespace std::chrono_literals;
+            std::this_thread::sleep_for(200ms);
+            send_response_head(cfd);
+        } else if (cnt == 100 * 10000) {
+            handle_request(line, (int) len);
+            executeUpdateTotal_bg = std::thread(executeUpdateTotal);
+            executeUpdateTotal_bg.detach();
+            using namespace std::chrono_literals;
+            std::this_thread::sleep_for(200ms);
+            send_response_head(cfd);
+        } else {
+            send_response_head(cfd);//先返回响应,减少io开销
+            handle_request(line, (int) len);
+        }
         uint64_t cur_done_count = done_count.fetch_add(1);
         count++;
         if ((cur_done_count + 1) % 10000 == 0) {
@@ -171,7 +193,6 @@ void func_http(int cfd) {
     close(cfd);
 }
 
-atomic_uint32_t req_cnt = 0;
 
 void handle_request(char *line, int len) {
     for (int i = 5; i < len; ++i) {
@@ -220,12 +241,6 @@ void handle_request(char *line, int len) {
         }
     }
     memToCollect->modified_ = true; //标记为修改过
-    uint32_t cnt = ++req_cnt;
-    if (cnt == 100 * 10000 - 1) {
-        executeUpdateToCollect();
-    } else if (cnt == 100 * 10000) {
-        executeUpdateTotal();
-    }
 }
 
 void func() {
