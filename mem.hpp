@@ -1,5 +1,6 @@
 #include <string>
 #include <atomic>
+<<<<<<< HEAD
 #include <utility>
 #include <vector>
 #include <unordered_map>
@@ -41,3 +42,41 @@ public:
 MemToCollect *memToCollects[100 * 10000 + 1] = {nullptr};
 MemTotalEnergy *memTotalEnergies[10 * 1000 + 1] = {nullptr};
 std::unordered_map<std::string, int> memTotalEnergyMap;
+=======
+#include <vector>
+#include <unordered_map>
+
+enum Status {
+    EMPTY, 
+    COLLECTED_BY_OTHER, 
+    ALL_COLLECTED
+};
+
+class MemTotalEnergy {
+  public:
+    MemTotalEnergy() = default;
+    MemTotalEnergy(std::string userId, int totalEnergy) {
+        userId_ = userId;
+        totalEnergy_ = totalEnergy;
+    }
+    
+    std::string userId_;
+    std::atomic<int> totalEnergy_;
+};
+
+class MemToCollect {
+  public:
+    MemToCollect() = default;
+    MemToCollect(std::string user_id, int total_energy) {
+        user_id_ = user_id;
+        total_energy_ = total_energy;
+        status_ = Status::EMPTY;
+        modified_ = false;
+    }
+
+    std::string user_id_;
+    Status status_;
+    int total_energy_;
+    bool modified_;
+};
+>>>>>>> 添加sql相关的逻辑
