@@ -47,23 +47,27 @@ void load_in_mem() {
             "SELECT id, user_id, to_collect_energy FROM to_collect_energy"
     ));
     ResultSet *rs1 = stmt1->executeQuery();
+    int MemToCollect_size = 0;
     while (rs1->next()) {
         MemToCollect *memToCollect = new MemToCollect();
         int id = rs1->getInt("id");
         memToCollect->user_id_ = rs1->getString("user_id");
         memToCollect->to_collect_energy_ = rs1->getInt("to_collect_energy");
         memToCollects[id] = memToCollect;
+        MemToCollect_size++;
     }
     unique_ptr<PreparedStatement> stmt2(conn->prepareStatement(
             "SELECT id, user_id, total_energy FROM total_energy"
     ));
     ResultSet *rs2 = stmt2->executeQuery();
+    int memTotalEnergyMap_size = 0;
     while (rs2->next()) {
-        int id = rs2->getInt("id");
         auto user_id_ = rs2->getString("user_id");
         auto total_energy = rs2->getInt("total_energy");
         memTotalEnergyMap[string(user_id_.c_str())] = atomic_int32_t(total_energy);
+        memTotalEnergyMap_size++;
     }
+    cout << MemToCollect_size << "->" << MemToCollect_size << endl;
 }
 
 void toCollectEnergy_update(const shared_ptr<Connection> &conn, int toCollectEnergy, const char *status, int id) {
@@ -122,6 +126,12 @@ void executeUpdateToCollect() {
         if (memToCollects[id]->modified_) {
             const char *new_status = memToCollects[id]->status_ == ALL_COLLECTED
                                      ? "all_collected" : "collected_by_other";
+            if (memToCollects[id]->status_ == ALL_COLLECTED) {
+                memToCollects[id]->to_collect_energy_ = 0;
+            } else {
+                memToCollects[id]->to_collect_energy_ -= (int) floor(
+                        (double) memToCollects[id]->to_collect_energy_ * 0.3);
+            }
             toCollectEnergy_update(conn, (int) memToCollects[id]->to_collect_energy_, new_status, id);
         }
     }
