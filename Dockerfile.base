@@ -1,4 +1,4 @@
-FROM green-final-base:last
+FROM centos:8
 
 # 安装工具链
 RUN cd /etc/yum.repos.d/
