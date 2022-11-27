@@ -1,11 +1,10 @@
-#include<cstdio>
-#include<unistd.h>
-#include<cstdlib>
-#include<cstring>
-#include<sys/epoll.h>
+#include <cstdio>
+#include <unistd.h>
+#include <cstdlib>
+#include <cstring>
+#include <sys/epoll.h>
 #include <sys/stat.h>
-#include<arpa/inet.h>
-#include<fcntl.h>
+#include <arpa/inet.h>
 #include <thread>
 #include <iostream>
 #include <mutex>
@@ -13,9 +12,12 @@
 #include <condition_variable>
 #include <cmath>
 #include "mem.hpp"
+#include "mariadb/conncpp.hpp"
 
 #define MAXSIZE 1000
+
 using namespace std;
+using namespace sql;
 
 std::mutex mtx;
 std::condition_variable cv;
@@ -27,12 +29,116 @@ auto stop = chrono::steady_clock::now();
 
 void handle_request(char *line, int len);
 
+// Instantiate Driver
+Driver *driver = mariadb::get_driver_instance();
+// Configure Connection
+SQLString url("jdbc:mariadb://127.0.0.1/atec2022");
+Properties properties({{"user",     "root"},
+                       {"password", "111111"}});
+
+shared_ptr<Connection> get_conn() {
+    shared_ptr<Connection> conn(driver->connect(url, properties));
+    return conn;
+}
+
+void load_in_mem() {
+    auto conn = get_conn();
+    unique_ptr<PreparedStatement> stmt1(conn->prepareStatement(
+            "SELECT id, user_id, to_collect_energy FROM to_collect_energy"
+    ));
+    ResultSet *rs1 = stmt1->executeQuery();
+    while (rs1->next()) {
+        MemToCollect *memToCollect = new MemToCollect();
+        int id = rs1->getInt("id");
+        memToCollect->user_id_ = rs1->getString("user_id");
+        memToCollect->to_collect_energy_ = rs1->getInt("to_collect_energy");
+        memToCollects[id] = memToCollect;
+    }
+    unique_ptr<PreparedStatement> stmt2(conn->prepareStatement(
+            "SELECT id, user_id, total_energy FROM total_energy"
+    ));
+    ResultSet *rs2 = stmt2->executeQuery();
+    while (rs2->next()) {
+        int id = rs2->getInt("id");
+        auto user_id_ = rs2->getString("user_id");
+        auto total_energy = rs2->getInt("total_energy");
+        memTotalEnergyMap[string(user_id_.c_str())] = atomic_int32_t(total_energy);
+    }
+}
+
+void toCollectEnergy_update(const shared_ptr<Connection> &conn, int toCollectEnergy, const char *status, int id) {
+    unique_ptr<PreparedStatement> stmt(conn->prepareStatement(
+            "update to_collect_energy set to_collect_energy = ?, status = ? where id = ?"
+    ));
+    stmt->setInt(1, toCollectEnergy);
+    stmt->setString(2, status);
+    stmt->setInt(3, id);
+    stmt->executeUpdate();
+}
+
+void totalEnergy_update(const shared_ptr<Connection> &conn, const char *user_id, int totalEnergy) {
+    unique_ptr<PreparedStatement> stmt(conn->prepareStatement(
+            "update total_energy set total_energy = ? where user_id = ?"
+    ));
+    stmt->setInt(1, totalEnergy);
+    stmt->setString(2, user_id);
+    stmt->executeUpdate();
+}
+
+// 后台线程
+void executeUpdateTotal() {
+    auto conn = get_conn();
+    conn->setAutoCommit(false);
+    // 1. 锁表
+    unique_ptr<PreparedStatement> lock(conn->prepareStatement(
+            "LOCK TABLE total_energy WRITE"
+    ));
+    lock->execute();
+    // 2. 刷数据
+    for (auto &iter: memTotalEnergyMap) {
+        totalEnergy_update(conn, /* user_id */iter.first.c_str(), /* totalEnergy */(int) iter.second);
+    }
+    // 3. 解锁表
+    unique_ptr<PreparedStatement> unlock(conn->prepareStatement(
+            "UNLOCK TABLES"
+    ));
+    unlock->execute();
+    conn->commit();
+    conn->close();
+    std::cout << "UpdateTotal end" << std::endl;
+}
+
+// 后台线程
+void executeUpdateToCollect() {
+    auto conn = get_conn();
+    conn->setAutoCommit(false);
+    // 1. 锁表
+    unique_ptr<PreparedStatement> lock(conn->prepareStatement(
+            "LOCK TABLE to_collect_energy WRITE"
+    ));
+    lock->execute();
+    // 2. 刷数据
+    for (int id = 1; id < 100 * 10000 + 1; id++) {
+        if (memToCollects[id]->modified_) {
+            const char *new_status = memToCollects[id]->status_ == ALL_COLLECTED
+                                     ? "all_collected" : "collected_by_other";
+            toCollectEnergy_update(conn, (int) memToCollects[id]->to_collect_energy_, new_status, id);
+        }
+    }
+    // 3. 解锁表
+    unique_ptr<PreparedStatement> unlock(conn->prepareStatement(
+            "UNLOCK TABLES"
+    ));
+    unlock->execute();
+    conn->commit();
+    conn->close();
+    std::cout << "UpdateToCollect end" << std::endl;
+}
 
 void send_response_head(int cfd) {
     const char *buf = "HTTP/1.1 200 OK\r\nContent-Type:application/json\r\nContent-Length:4\r\n\r\ntrue";
     send(cfd, buf, strlen(buf), 0);
 }
-
 
 void func_http(int cfd) {
     thread_local uint64_t count = 0;
@@ -54,6 +160,8 @@ void func_http(int cfd) {
     }
     close(cfd);
 }
+
+atomic_uint32_t req_cnt = 0;
 
 void handle_request(char *line, int len) {
     for (int i = 5; i < len; ++i) {
@@ -77,32 +185,37 @@ void handle_request(char *line, int len) {
     int to_collect_energy_id = (int) strtol(line + user_id_len + 17, nullptr, 10);
 //    cout << user_id << "->" << to_collect_energy_id << endl;
     MemToCollect *memToCollect = memToCollects[to_collect_energy_id];
-    MemTotalEnergy *memTotalEnergy = memTotalEnergies[memTotalEnergyMap[string(user_id)]];
-    uint8_t last_status = memToCollect->status_;//能量的上一个状态
+    uint8_t last_status = memToCollect->status_; //能量的上一个状态
     if (strcmp(memToCollect->user_id_.data(), user_id) == 0 && last_status != ALL_COLLECTED) {
         //自己的能量并且没被自己收走
         uint8_t status = ALL_COLLECTED;
         while (atomic_compare_exchange_weak(&memToCollect->status_, &last_status, status)) {}
         if (last_status == EMPTY) {
             //没人偷过能量
-            memTotalEnergy->totalEnergy_.fetch_add(memToCollect->total_energy_);
+            memTotalEnergyMap[string(user_id)].fetch_add(memToCollect->to_collect_energy_);
         } else {
             //能量被偷过了
             //这里不能用memToCollect->total_energy_,会有线程安全问题
-            int to_collect_energy_count = (int) floor((double) memToCollect->total_energy_ * 0.3);
-            memTotalEnergy->totalEnergy_.fetch_add(memToCollect->total_energy_ - to_collect_energy_count);
+            int to_collect_energy_count = (int) floor((double) memToCollect->to_collect_energy_ * 0.3);
+            memTotalEnergyMap[string(user_id)].fetch_add(memToCollect->to_collect_energy_ - to_collect_energy_count);
         }
     } else if (last_status == EMPTY) {
         //别人的能量
         uint8_t status = COLLECTED_BY_OTHER;
         if (atomic_compare_exchange_weak(&memToCollect->status_, &last_status, status)) {
             //成功偷走能量
-            int to_collect_energy_count = (int) floor((double) memToCollect->total_energy_ * 0.3);
-            memTotalEnergy->totalEnergy_.fetch_add(to_collect_energy_count);
+            int to_collect_energy_count = (int) floor((double) memToCollect->to_collect_energy_ * 0.3);
+            memTotalEnergyMap[string(user_id)].fetch_add(to_collect_energy_count);
             //这里不修改memToCollect->total_energy_,会有线程安全问题
         }
     }
     memToCollect->modified_ = true; //标记为修改过
+    uint32_t cnt = ++req_cnt;
+    if (cnt == 100 * 10000 - 1) {
+        executeUpdateToCollect();
+    } else if (cnt == 100 * 10000) {
+        executeUpdateTotal();
+    }
 }
 
 void func() {
@@ -179,6 +292,7 @@ void activate_flag() {
 }
 
 int main(int argc, char *argv[]) {
+    load_in_mem();
     thread thread_main(func);
     std::unique_lock<std::mutex> lck(mtx);
     cv.wait(lck, [] {
