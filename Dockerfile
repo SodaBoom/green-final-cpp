@@ -1,4 +1,4 @@
-FROM green-final-base:last
+FROM green-final-base:latest
 
 # 赛题要求提交atec_project文件
 COPY atec_project /home/admin/atec_project
