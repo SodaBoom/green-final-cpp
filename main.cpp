@@ -102,6 +102,7 @@ void handle_request(char *line, int len) {
             //这里不修改memToCollect->total_energy_,会有线程安全问题
         }
     }
+    memToCollect->modified_ = true; //标记为修改过
 }
 
 void func() {
