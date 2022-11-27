@@ -4,9 +4,9 @@
 #include <vector>
 #include <unordered_map>
 
-#define EMPTY 1
-#define COLLECTED_BY_OTHER 2
-#define ALL_COLLECTED 3
+#define EMPTY 0
+#define COLLECTED_BY_OTHER 1
+#define ALL_COLLECTED 2
 
 //class MemTotalEnergy {
 //public:
@@ -24,9 +24,10 @@
 class MemToCollect {
 public:
     std::string user_id_;
-    std::atomic_uint8_t status_{};//0:EMPTY, 1:COLLECTED_BY_OTHER, 2:ALL_COLLECTED;
-    std::atomic_uint32_t to_collect_energy_{};
+    std::uint8_t status_ = EMPTY;//0:EMPTY, 1:COLLECTED_BY_OTHER, 2:ALL_COLLECTED;
+    std::uint32_t to_collect_energy_;
     bool modified_ = false;
+    std::mutex mutex;
 };
 
 MemToCollect *memToCollects[100 * 10000 + 1] = {nullptr};

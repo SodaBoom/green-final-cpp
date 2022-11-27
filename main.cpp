@@ -16,6 +16,8 @@
 #include "mem.hpp"
 #include "mariadb/conncpp.hpp"
 
+//#define REQ_TOTAL_CNT 3
+#define REQ_TOTAL_CNT 100 * 10000
 #define MAXSIZE 1000
 
 using namespace std;
@@ -25,7 +27,7 @@ std::mutex mtx;
 std::condition_variable cv;
 bool init_server_done = false;
 atomic_uint64_t has_count = 0;
-atomic_uint64_t done_count = 0;
+atomic_uint32_t done_count = 0;
 auto start = chrono::steady_clock::now();
 auto stop = chrono::steady_clock::now();
 
@@ -125,16 +127,10 @@ void executeUpdateToCollect() {
     ));
     lock->execute();
     // 2. 刷数据
-    for (int id = 1; id < 100 * 10000 + 1; id++) {
+    for (int id = 1; id < REQ_TOTAL_CNT + 1; id++) {
         if (memToCollects[id]->modified_) {
             const char *new_status = memToCollects[id]->status_ == ALL_COLLECTED
                                      ? "all_collected" : "collected_by_other";
-            if (memToCollects[id]->status_ == ALL_COLLECTED) {
-                memToCollects[id]->to_collect_energy_ = 0;
-            } else {
-                memToCollects[id]->to_collect_energy_ -= (int) floor(
-                        (double) memToCollects[id]->to_collect_energy_ * 0.3);
-            }
             toCollectEnergy_update(conn, (int) memToCollects[id]->to_collect_energy_, new_status, id);
         }
     }
@@ -155,23 +151,24 @@ void send_response_head(int cfd) {
 
 std::thread executeUpdateToCollect_bg;
 std::thread executeUpdateTotal_bg;
+
 void func_http(int cfd) {
     thread_local uint64_t count = 0;
-    while (done_count < 100 * 10000) {
+    while (done_count < REQ_TOTAL_CNT) {
         char line[1024] = {0};
         ssize_t len = recv(cfd, line, sizeof(line), 0);
         if (len <= 0) {
             break;
         }
         uint32_t cnt = ++req_cnt;
-        if (cnt == 100 * 10000 - 1) {
+        if (cnt == REQ_TOTAL_CNT - 1) {
             handle_request(line, (int) len);
             executeUpdateToCollect_bg = std::thread(executeUpdateToCollect);
             executeUpdateToCollect_bg.detach();
             using namespace std::chrono_literals;
             std::this_thread::sleep_for(200ms);
             send_response_head(cfd);
-        } else if (cnt == 100 * 10000) {
+        } else if (cnt == REQ_TOTAL_CNT) {
             handle_request(line, (int) len);
             executeUpdateTotal_bg = std::thread(executeUpdateTotal);
             executeUpdateTotal_bg.detach();
@@ -192,7 +189,6 @@ void func_http(int cfd) {
     }
     close(cfd);
 }
-
 
 void handle_request(char *line, int len) {
     for (int i = 5; i < len; ++i) {
@@ -216,31 +212,26 @@ void handle_request(char *line, int len) {
     int to_collect_energy_id = (int) strtol(line + user_id_len + 17, nullptr, 10);
 //    cout << user_id << "->" << to_collect_energy_id << endl;
     MemToCollect *memToCollect = memToCollects[to_collect_energy_id];
-    uint8_t last_status = memToCollect->status_; //能量的上一个状态
-    if (strcmp(memToCollect->user_id_.data(), user_id) == 0 && last_status != ALL_COLLECTED) {
-        //自己的能量并且没被自己收走
-        uint8_t status = ALL_COLLECTED;
-        while (atomic_compare_exchange_weak(&memToCollect->status_, &last_status, status)) {}
-        if (last_status == EMPTY) {
-            //没人偷过能量
-            memTotalEnergyMap[string(user_id)].fetch_add(memToCollect->to_collect_energy_);
-        } else {
-            //能量被偷过了
-            //这里不能用memToCollect->total_energy_,会有线程安全问题
-            int to_collect_energy_count = (int) floor((double) memToCollect->to_collect_energy_ * 0.3);
-            memTotalEnergyMap[string(user_id)].fetch_add(memToCollect->to_collect_energy_ - to_collect_energy_count);
-        }
-    } else if (last_status == EMPTY) {
-        //别人的能量
-        uint8_t status = COLLECTED_BY_OTHER;
-        if (atomic_compare_exchange_weak(&memToCollect->status_, &last_status, status)) {
-            //成功偷走能量
-            int to_collect_energy_count = (int) floor((double) memToCollect->to_collect_energy_ * 0.3);
-            memTotalEnergyMap[string(user_id)].fetch_add(to_collect_energy_count);
-            //这里不修改memToCollect->total_energy_,会有线程安全问题
-        }
-    }
+    if (memToCollect == nullptr || memToCollect->status_ == ALL_COLLECTED) return;
     memToCollect->modified_ = true; //标记为修改过
+    memToCollect->mutex.lock();
+    if (memToCollect->status_ == ALL_COLLECTED ||
+        (strcmp(memToCollect->user_id_.data(), user_id) != 0 &&
+         (memToCollect->status_ != EMPTY || memToCollect->to_collect_energy_ <= 3))) {
+        memToCollect->mutex.unlock();
+        return;
+    }
+    if (strcmp(memToCollect->user_id_.data(), user_id) == 0) {
+        memTotalEnergyMap[string(user_id)] += memToCollect->to_collect_energy_;
+        memToCollect->to_collect_energy_ = 0;
+        memToCollect->status_ = ALL_COLLECTED;
+    } else {
+        int to_collect_energy_count = (int) floor((double) memToCollect->to_collect_energy_ * 0.3);
+        memTotalEnergyMap[string(user_id)] += to_collect_energy_count;
+        memToCollect->to_collect_energy_ -= to_collect_energy_count;
+        memToCollect->status_ = COLLECTED_BY_OTHER;
+    }
+    memToCollect->mutex.unlock();
 }
 
 void func() {
@@ -318,6 +309,7 @@ void activate_flag() {
 
 int main(int argc, char *argv[]) {
     load_in_mem();
+    cout << "load_in_mem done" << endl;
     thread thread_main(func);
     std::unique_lock<std::mutex> lck(mtx);
     cv.wait(lck, [] {
