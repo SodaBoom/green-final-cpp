@@ -1,24 +1,171 @@
+#include<cstdio>
+#include<unistd.h>
+#include<cstdlib>
+#include<cstring>
+#include<sys/epoll.h>
+#include <sys/stat.h>
+#include<arpa/inet.h>
+#include<fcntl.h>
+#include <thread>
 #include <iostream>
-#include <memory>
-#include <regex>
-#include <string>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
 #include <cmath>
-#include "inc/httplib.h"
+#include "mem.hpp"
 
-#include "mariadb/conncpp.hpp"
-
+#define MAXSIZE 1000
 using namespace std;
-using namespace httplib;
-using namespace sql;
-atomic_uint64_t thread_count = 0;
-atomic_uint64_t request_count = 0;
-// Instantiate Driver
-Driver *driver = mariadb::get_driver_instance();
-// Configure Connection
-SQLString url("jdbc:mariadb://127.0.0.1/atec2022");
-Properties properties({{"user",     "root"},
-                       {"password", "111111"}});
-vector<shared_ptr<Connection>> conn_list;
+
+std::mutex mtx;
+std::condition_variable cv;
+bool init_server_done = false;
+atomic_uint64_t has_count = 0;
+atomic_uint64_t done_count = 0;
+auto start = chrono::steady_clock::now();
+auto stop = chrono::steady_clock::now();
+
+void handle_request(char *line, int len);
+
+
+void send_response_head(int cfd) {
+    const char *buf = "HTTP/1.1 200 OK\r\nContent-Type:application/json\r\nContent-Length:4\r\n\r\ntrue";
+    send(cfd, buf, strlen(buf), 0);
+}
+
+
+void func_http(int cfd) {
+    thread_local uint64_t count = 0;
+    while (done_count < 100 * 10000) {
+        char line[1024] = {0};
+        ssize_t len = recv(cfd, line, sizeof(line), 0);
+        if (len <= 0) {
+            break;
+        }
+        send_response_head(cfd);//先返回响应,减少io开销
+        handle_request(line, (int) len);
+        uint64_t cur_done_count = done_count.fetch_add(1);
+        count++;
+        if ((cur_done_count + 1) % 10000 == 0) {
+            stop = chrono::steady_clock::now();
+            chrono::duration<double> diff = stop - start;
+            cout << "cur_done_count:" << cur_done_count + 1 << " " << count << " " << diff.count() << endl;
+        }
+    }
+    close(cfd);
+}
+
+void handle_request(char *line, int len) {
+    for (int i = 5; i < len; ++i) {
+        if (line[i] == ' ' || line[i] == '\r' || line[i] == '\n') {
+            line[i] = '\0';
+            break;
+        }
+    }
+    if (memcmp("/collect_energy/", line + 5, 16) != 0) {
+        return;
+    }
+    line += 5;//去掉POST
+    char user_id[64] = {0};
+    int user_id_len = 0;
+    for (; user_id_len < len; ++user_id_len) {
+        if (line[user_id_len + 16] == '/') {
+            break;
+        }
+        user_id[user_id_len] = line[user_id_len + 16];
+    }
+    int to_collect_energy_id = (int) strtol(line + user_id_len + 17, nullptr, 10);
+//    cout << user_id << "->" << to_collect_energy_id << endl;
+    MemToCollect *memToCollect = memToCollects[to_collect_energy_id];
+    MemTotalEnergy *memTotalEnergy = memTotalEnergies[memTotalEnergyMap[string(user_id)]];
+    uint8_t last_status = memToCollect->status_;//能量的上一个状态
+    if (strcmp(memToCollect->user_id_.data(), user_id) == 0 && last_status != ALL_COLLECTED) {
+        //自己的能量并且没被自己收走
+        uint8_t status = ALL_COLLECTED;
+        while (atomic_compare_exchange_weak(&memToCollect->status_, &last_status, status)) {}
+        if (last_status == EMPTY) {
+            //没人偷过能量
+            memTotalEnergy->totalEnergy_.fetch_add(memToCollect->total_energy_);
+        } else {
+            //能量被偷过了
+            //这里不能用memToCollect->total_energy_,会有线程安全问题
+            int to_collect_energy_count = (int) floor((double) memToCollect->total_energy_ * 0.3);
+            memTotalEnergy->totalEnergy_.fetch_add(memToCollect->total_energy_ - to_collect_energy_count);
+        }
+    } else if (last_status == EMPTY) {
+        //别人的能量
+        uint8_t status = COLLECTED_BY_OTHER;
+        if (atomic_compare_exchange_weak(&memToCollect->status_, &last_status, status)) {
+            //成功偷走能量
+            int to_collect_energy_count = (int) floor((double) memToCollect->total_energy_ * 0.3);
+            memTotalEnergy->totalEnergy_.fetch_add(to_collect_energy_count);
+            //这里不修改memToCollect->total_energy_,会有线程安全问题
+        }
+    }
+}
+
+void func() {
+    int ep_fd = epoll_create(1);
+    if (ep_fd == 1) {
+        perror("epllo_create error");
+    }
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd == -1) {
+        perror("socket error");
+    }
+    struct sockaddr_in serv{};
+    memset(&serv, 0, sizeof(serv));
+    serv.sin_family = AF_INET;
+    serv.sin_port = htons(8080);
+    serv.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    //端口复用
+    int flag = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+    int ret = bind(lfd, (struct sockaddr *) &serv, sizeof(serv));
+    if (ret == -1) {
+        perror("bind error");
+    }
+    //设置监听
+    ret = listen(lfd, 200);
+    if (ret == -1) {
+        perror("listen error");
+    }
+    struct epoll_event ev{};
+    ev.events = EPOLLIN;
+    ev.data.fd = lfd;
+    epoll_ctl(ep_fd, EPOLL_CTL_ADD, lfd, &ev);
+    struct epoll_event all[MAXSIZE];
+    init_server_done = true;
+    cv.notify_all();
+    struct sockaddr_in client{};
+    socklen_t len = sizeof(client);
+    while (true) {
+        ret = epoll_wait(ep_fd, all, MAXSIZE, -1);
+        if (ret == -1) {
+            perror("epllo_wait error");
+            continue;
+        }
+        //遍历发生变化的节点
+        for (int i = 0; i < ret; i++) {
+            //只处理读事件，其他默认不处理
+            struct epoll_event *pev = &all[i];
+            if (!(pev->events & EPOLLIN))   //不是读事件
+            {
+                continue;
+            }
+            if (pev->data.fd == lfd) {
+                uint64_t cur_has_count = has_count.fetch_add(1);
+                if (cur_has_count == 0) {
+                    start = chrono::steady_clock::now();
+                }
+                cout << "cur_has_count:" << cur_has_count + 1 << endl;
+                int cfd = accept(lfd, (struct sockaddr *) &client, &len);
+                (new thread(func_http, cfd))->detach();
+            }
+        }
+    }
+}
 
 // 标记启动成功
 void activate_flag() {
@@ -30,118 +177,14 @@ void activate_flag() {
     system(("touch " + activate_flag_file_path + "user_activated").c_str());
 }
 
-shared_ptr<Connection> get_conn() {
-    thread_local uint64_t cur_thread_idx = -1;
-    if (-1 == cur_thread_idx) {
-        conn_list.emplace_back(driver->connect(url, properties));
-        cur_thread_idx = thread_count.fetch_add(1);
-    }
-    return conn_list.at(cur_thread_idx);
-}
-
-void init_db() {
-    conn_list.reserve(100);
-}
-
-void
-toCollectEnergy_update(const shared_ptr<Connection> &conn, int id, int toCollectEnergy, bool is_collected_by_other) {
-    unique_ptr<PreparedStatement> stmt(conn->prepareStatement(
-            "update to_collect_energy set to_collect_energy = ?, status = ?, gmt_modified = current_timestamp() where id = ?"
-    ));
-    stmt->setInt(1, toCollectEnergy);
-    stmt->setString(2, is_collected_by_other ? "collected_by_other" : "all_collected");
-    stmt->setInt(3, id);
-    stmt->executeUpdate();
-}
-
-void totalEnergy_update(const shared_ptr<Connection> &conn, const char *user_id, int totalEnergy) {
-    unique_ptr<PreparedStatement> stmt(conn->prepareStatement(
-            "update total_energy set total_energy = ?, gmt_modified = current_timestamp() where user_id = ?"
-    ));
-    stmt->setInt(1, totalEnergy);
-    stmt->setString(2, user_id);
-    stmt->executeUpdate();
-}
-
-void collect(const char *user_id, int to_collect_energy_id) {
-    request_count.fetch_add(1);
-
-    shared_ptr<Connection> conn = get_conn();
-    conn->setAutoCommit(false);
-    // get to_collect_energy
-    // 自己来采集 或者 别人来采集但必须是未采集状态
-    unique_ptr<PreparedStatement> stmt1(conn->prepareStatement(
-            "select user_id, to_collect_energy from to_collect_energy"
-            " where id = ? and (user_id = ? or status is null)"
-    ));
-    stmt1->setInt(1, to_collect_energy_id);
-    stmt1->setString(2, user_id);
-    ResultSet *rs1 = stmt1->executeQuery();
-    if (!rs1->next()) return;
-    auto tce_user_id = rs1->getString("user_id");
-    auto tce_to_collect_energy = rs1->getInt("to_collect_energy");
-
-    // get total_energy
-    unique_ptr<PreparedStatement> stmt2(conn->prepareStatement(
-            "select total_energy from total_energy where user_id = ?"
-    ));
-    stmt2->setString(1, user_id);
-    ResultSet *rs2 = stmt2->executeQuery();
-    if (!rs2->next()) return;
-    auto te_total_energy = rs2->getInt("total_energy");
-
-    int can_collect_energy; // 可以取多少
-    bool is_collected_by_other; // 是别人取吗
-    if (std::strcmp(tce_user_id.c_str(), user_id) == 0) {
-        can_collect_energy = tce_to_collect_energy; // 自己取全部
-        is_collected_by_other = false;
-    } else {
-        can_collect_energy = (int) (floor((double) tce_to_collect_energy * 0.3));
-        is_collected_by_other = true;
-    }
-    te_total_energy += can_collect_energy;
-    tce_to_collect_energy -= can_collect_energy;
-    totalEnergy_update(conn, user_id, te_total_energy);
-    toCollectEnergy_update(conn, to_collect_energy_id, tce_to_collect_energy, is_collected_by_other);
-
-    conn->commit();
-}
-
-int main() {
-    // 初始化db
-    init_db();
-    // 初始化server
-    Server svr;
-    // POST /collect_energy/{userId}/{toCollectEnergyId}
-    svr.Get(R"(/collect_energy/(\w+)/(\d+))", [&](const Request &req, Response &res) {
-        thread_local char userId[4096];
-        memcpy(userId, req.matches[1].str().c_str(), req.matches[1].str().length());
-        auto toCollectEnergyId = atoi(req.matches[2].str().c_str());
-        collect(userId, toCollectEnergyId);
-        res.set_content("true", "text/plain");
+int main(int argc, char *argv[]) {
+    thread thread_main(func);
+    std::unique_lock<std::mutex> lck(mtx);
+    cv.wait(lck, [] {
+        return init_server_done;
     });
-    svr.Post(R"(/collect_energy/(\w+)/(\d+))", [&](const Request &req, Response &res) {
-        thread_local char userId[4096];
-        memcpy(userId, req.matches[1].str().c_str(), req.matches[1].str().length());
-        auto toCollectEnergyId = atoi(req.matches[2].str().c_str());
-        collect(userId, toCollectEnergyId);
-        res.set_content("true", "text/plain");
-    });
-    svr.set_exception_handler([](const auto &req, auto &res, const std::exception_ptr &ep) {
-        res.set_content("true", "text/html");
-        res.status = 200;
-    });
-    svr.set_error_handler([](const auto &req, auto &res) {
-        res.set_content("true", "text/html");
-        res.status = 200;
-    });
-
-    if (!svr.bind_to_port("0.0.0.0", 8080)) {
-        std::cerr << "bind port fail" << std::endl;
-    }
     activate_flag();
-    if (!svr.listen_after_bind()) {
-        std::cerr << "listen fail" << std::endl;
-    }
+    cout << "init done" << endl;
+    thread_main.join();
     return 0;
 }
